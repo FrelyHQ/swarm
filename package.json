@@ -1,0 +1,30 @@
+{
+  "name": "frely-snap",
+  "version": "0.1.0",
+  "description": "A minimal local HTTP adapter for Frely Web3 debugging.",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FrelyHQ/swarm.git"
+  },
+  "type": "module",
+  "packageManager": "bun@1.4.0",
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "build": "bun build src/server.ts --target bun --outdir dist",
+    "start": "bun dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "smoke": "bun run scripts/smoke.mjs",
+    "verify:boundary": "bun run scripts/verify-public-boundary.mjs",
+    "verify": "bun run typecheck && bun test && bun run build && bun run smoke && bun run verify:boundary"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.11",
+    "typescript": "5.8.3"
+  },
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,9 @@
+services:
+  snap:
+    networks:
+      - frely-local
+
+networks:
+  frely-local:
+    name: ${SNAP_EXTERNAL_NETWORK:-frely-local}
+    external: true
