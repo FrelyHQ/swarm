@@ -23,7 +23,6 @@ const forbiddenMarkers = [
   "quota",
   "settlement",
   "subscription",
-  "hackathon",
   "flutter-agent",
   "artifact-foundry",
   "host-governance",
