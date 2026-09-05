@@ -1,28 +1,34 @@
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export interface DebugRequest {
-  project: {
-    id: string;
-    chain: string;
-    network: string;
+  readonly project: {
+    readonly id: string;
+    readonly chain: string;
+    readonly network: string;
   };
-  problem: {
-    title: string;
-    description: string;
+  readonly problem: {
+    readonly title: string;
+    readonly description: string;
   };
-  context?: JsonValue;
-  question: string;
+  readonly context?: JsonValue;
+  readonly question: string;
 }
 
 export interface DebugResult {
-  request_id: string;
-  result: string;
+  readonly request_id: string;
+  readonly result: string;
 }
 
 export type ProbeStatus = "ready" | "unavailable" | "not_configured";
 
 export interface ReadyResponse {
-  status: "ready" | "not_ready";
+  readonly status: "ready" | "not_ready";
 }
 
 export type SafeErrorCode =
@@ -36,5 +42,8 @@ export type SafeErrorCode =
   | "internal_error";
 
 export interface SafeErrorResponse {
-  error: { code: SafeErrorCode };
+  readonly error: {
+    readonly code: SafeErrorCode;
+    readonly request_id?: string;
+  };
 }

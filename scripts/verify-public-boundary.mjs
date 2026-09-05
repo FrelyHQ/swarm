@@ -1,32 +1,115 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+#!/usr/bin/env bun
+
+import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const root = new URL("..", import.meta.url).pathname;
-const forbidden = [
-  "@mastra", "@modelcontextprotocol", "posthog", "SNAPSHOT.md", "hackathon", "billing", "quota", "settlement",
-  "admin/owner", "docker.sock", "BEGIN OPENSSH", "Authorization: Bearer", "DATABASE_URL",
-  "internal.frely", "staging.frely", "old-runtime",
+const forbiddenPaths = [
+  ".mastra",
+  "SNAPSHOT.md",
+  "src/mastra",
+  "src/adapters",
+  "tests/mcp.test.ts",
+  "tests/openai-responses.test.ts",
 ];
+const forbiddenMarkers = [
+  "@mastra",
+  "@modelcontextprotocol",
+  "FRIDAY_RELAY",
+  "CLIPROXY",
+  "posthog",
+  "stripe",
+  "billing",
+  "quota",
+  "settlement",
+  "subscription",
+  "hackathon",
+  "flutter-agent",
+  "artifact-foundry",
+  "host-governance",
+  "wyattcoder.top",
+  "ctb-",
+  "docker.sock",
+  "postgres",
+  "BEGIN RSA PRIVATE KEY",
+  "BEGIN OPENSSH PRIVATE KEY",
+];
+
 const files = [];
-async function walk(dir) {
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    if ([".git", "node_modules", "dist"].includes(entry.name)) continue;
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) await walk(path); else files.push(path);
+async function walk(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if ([".git", "node_modules", "dist", "coverage"].includes(entry.name)) continue;
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await walk(path);
+    else files.push(path);
   }
 }
 await walk(root);
+
 const violations = [];
+for (const forbiddenPath of forbiddenPaths) {
+  if (files.some((file) => relative(root, file) === forbiddenPath || relative(root, file).startsWith(`${forbiddenPath}/`))) {
+    violations.push(`forbidden path: ${forbiddenPath}`);
+  }
+}
+
 for (const file of files) {
   const name = relative(root, file);
-  // The license and security/test fixtures contain standard explanatory words and
-  // deliberate rejection examples; boundary checks target shipped implementation.
-  if (["LICENSE", "README.md", "SECURITY.md", "scripts/verify-public-boundary.mjs"].includes(name) || name.startsWith("tests/")) continue;
+  if (name === "scripts/verify-public-boundary.mjs" || name === "LICENSE") continue;
   const text = await readFile(file, "utf8");
-  for (const pattern of forbidden) if (text.toLowerCase().includes(pattern.toLowerCase())) violations.push(`${name} contains forbidden boundary marker`);
+  const lower = text.toLowerCase();
+  for (const marker of forbiddenMarkers) {
+    if (lower.includes(marker.toLowerCase())) {
+      violations.push(`${name} contains forbidden marker`);
+    }
+  }
+  if (/[\u0000]/u.test(text)) violations.push(`${name} contains a NUL byte`);
+  if (/BEGIN [A-Z0-9 ]+PRIVATE KEY/iu.test(text)) {
+    violations.push(`${name} contains a private-key marker`);
+  }
 }
+
+const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+if (packageJson.private !== false) violations.push("package.json must declare private=false");
+if (packageJson.license !== "Apache-2.0") violations.push("package.json must declare Apache-2.0");
+for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+  for (const name of Object.keys(packageJson[section] ?? {})) {
+    if (/^(?:@mastra|@modelcontextprotocol|openai|ethers|viem|web3|prisma|drizzle)/iu.test(name)) {
+      violations.push(`disallowed dependency: ${name}`);
+    }
+  }
+}
+
+const dockerignore = await readFile(join(root, ".dockerignore"), "utf8");
+for (const required of [".git", "node_modules", ".env", "secrets"]) {
+  if (!dockerignore.split(/\r?\n/u).includes(required)) {
+    violations.push(`.dockerignore is missing: ${required}`);
+  }
+}
+
 const compose = await readFile(join(root, "compose.yaml"), "utf8");
-for (const unsafe of ["privileged:", "network_mode: host", "docker.sock", "volumes:"]) if (compose.includes(unsafe)) violations.push(`compose contains unsafe property: ${unsafe}`);
-if (!compose.includes("read_only: true") || !compose.includes("cap_drop:") || !compose.includes("pids_limit:") || !compose.includes("127.0.0.1:")) violations.push("compose is missing required isolation limits");
-if (violations.length) { console.error(violations.join("\n")); process.exit(1); }
+for (const marker of ["privileged:", "network_mode: host", "docker.sock", "volumes:"]) {
+  if (compose.toLowerCase().includes(marker.toLowerCase())) {
+    violations.push(`compose contains unsafe property: ${marker}`);
+  }
+}
+for (const required of [
+  "read_only: true",
+  "cap_drop:",
+  "no-new-privileges:true",
+  "mem_limit:",
+  "cpus:",
+  "pids_limit:",
+  "restart:",
+  "healthcheck:",
+  "secrets:",
+  "127.0.0.1:",
+]) {
+  if (!compose.includes(required)) violations.push(`compose is missing: ${required}`);
+}
+
+if (violations.length > 0) {
+  console.error(violations.join("\n"));
+  process.exit(1);
+}
 console.log(`boundary: ok (${files.length} files checked)`);

@@ -1,7 +1,13 @@
 services:
-  snap:
+  snap-debug:
     networks:
+      - default
       - frely-local
+    environment:
+      # These defaults assume the sibling containers share frely-local and
+      # advertise the aliases below. Override them for another local topology.
+      FRELY_GATEWAY_URL: ${FRELY_GATEWAY_URL:-http://gateway-srv:43000}
+      SNAP_SWARM_URL: ${SNAP_SWARM_URL:-http://frely-swarm:4111}
 
 networks:
   frely-local:

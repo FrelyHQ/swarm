@@ -1,127 +1,263 @@
+import type { SnapConfig } from "./config";
 import type { DebugRequest, ProbeStatus } from "./contracts";
 import { makePrompt } from "./validation";
-import type { SnapConfig } from "./config";
+
+const MAX_UPSTREAM_RESPONSE_BYTES = 128 * 1024;
+const MAX_RESULT_BYTES = 64 * 1024;
+
+export type UpstreamErrorCode =
+  | "gateway_timeout"
+  | "gateway_unavailable"
+  | "gateway_rejected"
+  | "gateway_invalid_response";
 
 export class UpstreamError extends Error {
-  constructor(public readonly code: "gateway_timeout" | "gateway_unavailable" | "gateway_rejected" | "gateway_invalid_response") {
+  constructor(public readonly code: UpstreamErrorCode) {
     super(code);
   }
 }
 
-function combinedSignal(parent: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const abort = () => controller.abort();
-  parent?.addEventListener("abort", abort, { once: true });
-  controller.signal.addEventListener("abort", () => {
-    clearTimeout(timer);
-    parent?.removeEventListener("abort", abort);
-  }, { once: true });
-  return controller.signal;
+export type FetchLike = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export interface FrelyClientPort {
+  probeGateway(signal?: AbortSignal): Promise<ProbeStatus>;
+  probeSwarm(signal?: AbortSignal): Promise<ProbeStatus>;
+  debug(
+    request: DebugRequest,
+    requestId: string,
+    signal?: AbortSignal,
+  ): Promise<string>;
 }
 
-export class FrelyClient {
-  constructor(private readonly config: SnapConfig) {}
+interface TimeoutScope {
+  readonly signal: AbortSignal;
+  readonly timedOut: () => boolean;
+  readonly cleanup: () => void;
+}
 
-  private headers(includeKey = true): HeadersInit {
-    const headers: Record<string, string> = { accept: "application/json" };
-    if (includeKey) headers.authorization = `Bearer ${this.config.gatewayApiKey}`;
-    if (this.config.gatewayHost) headers.host = this.config.gatewayHost;
-    return headers;
+function timeoutScope(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): TimeoutScope {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException("Upstream request timed out", "TimeoutError"));
+  }, timeoutMs);
+  const onParentAbort = () => {
+    controller.abort(parent?.reason);
+  };
+  parent?.addEventListener("abort", onParentAbort, { once: true });
+  if (parent?.aborted === true) onParentAbort();
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup: () => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onParentAbort);
+    },
+  };
+}
+
+function requestHeaders(
+  config: SnapConfig,
+  requestId?: string,
+  includeApiKey = true,
+): Headers {
+  const headers = new Headers({ accept: "application/json" });
+  if (includeApiKey) headers.set("authorization", `Bearer ${config.gatewayApiKey}`);
+  if (config.gatewayHost !== undefined) headers.set("host", config.gatewayHost);
+  if (requestId !== undefined) headers.set("x-request-id", requestId);
+  return headers;
+}
+
+export class FrelyClient implements FrelyClientPort {
+  private readonly fetcher: FetchLike;
+
+  public constructor(
+    private readonly config: SnapConfig,
+    fetcher: FetchLike = (input, init) => globalThis.fetch(input, init),
+  ) {
+    this.fetcher = fetcher;
   }
 
-  async probeGateway(signal?: AbortSignal): Promise<ProbeStatus> {
-    return this.probe(this.config.gatewayHealthUrl, this.headers(), signal);
+  public probeGateway(signal?: AbortSignal): Promise<ProbeStatus> {
+    return this.probe(
+      this.config.gatewayHealthUrl,
+      requestHeaders(this.config, undefined, false),
+      signal,
+    );
   }
 
-  async probeSwarm(signal?: AbortSignal): Promise<ProbeStatus> {
-    if (!this.config.swarmUrl) return "not_configured";
-    const headers: HeadersInit = { accept: "application/json" };
-    if (this.config.swarmApiKey) headers.authorization = `Bearer ${this.config.swarmApiKey}`;
+  public probeSwarm(signal?: AbortSignal): Promise<ProbeStatus> {
+    if (this.config.swarmUrl === undefined) return Promise.resolve("not_configured");
+    const headers = new Headers({ accept: "application/json" });
+    if (this.config.swarmApiKey !== undefined) {
+      headers.set("authorization", `Bearer ${this.config.swarmApiKey}`);
+    }
     return this.probe(this.config.swarmUrl, headers, signal);
   }
 
-  private async probe(url: URL, headers: HeadersInit, parent?: AbortSignal): Promise<ProbeStatus> {
+  private async probe(
+    url: URL,
+    headers: Headers,
+    parent: AbortSignal | undefined,
+  ): Promise<ProbeStatus> {
+    const scope = timeoutScope(parent, this.config.timeoutMs);
     try {
-      const response = await fetch(url, { method: "GET", headers, signal: combinedSignal(parent, this.config.timeoutMs) });
+      const response = await this.fetcher(url, {
+        method: "GET",
+        headers,
+        signal: scope.signal,
+      });
       await response.body?.cancel();
       return response.ok ? "ready" : "unavailable";
-    } catch (error) {
-      return error instanceof DOMException && error.name === "AbortError" ? "unavailable" : "unavailable";
+    } catch {
+      return "unavailable";
+    } finally {
+      scope.cleanup();
     }
   }
 
-  async debug(request: DebugRequest, parent?: AbortSignal): Promise<string> {
-    let response: Response;
+  public async debug(
+    request: DebugRequest,
+    requestId: string,
+    parent?: AbortSignal,
+  ): Promise<string> {
+    const scope = timeoutScope(parent, this.config.timeoutMs);
     try {
-      response = await fetch(this.config.gatewayResponsesUrl, {
+      const headers = requestHeaders(this.config, requestId);
+      headers.set("content-type", "application/json");
+      const response = await this.fetcher(this.config.gatewayResponsesUrl, {
         method: "POST",
-        headers: { ...this.headers(), "content-type": "application/json" },
-        body: JSON.stringify({ model: this.config.model, stream: false, store: false, input: makePrompt(request) }),
-        signal: combinedSignal(parent, this.config.timeoutMs),
+        headers,
+        body: JSON.stringify({
+          model: this.config.model,
+          input: makePrompt(request),
+          stream: false,
+          store: false,
+        }),
+        signal: scope.signal,
       });
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new UpstreamError(
+          response.status >= 500
+            ? "gateway_unavailable"
+            : "gateway_rejected",
+        );
+      }
+      let body: unknown;
+      try {
+        body = await readJsonBounded(response, MAX_UPSTREAM_RESPONSE_BYTES);
+      } catch {
+        throw new UpstreamError("gateway_invalid_response");
+      }
+      try {
+        const result = extractResult(body);
+        if (result === undefined) {
+          throw new Error("upstream result is missing");
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof UpstreamError) throw error;
+        throw new UpstreamError("gateway_invalid_response");
+      }
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") throw new UpstreamError("gateway_timeout");
+      if (error instanceof UpstreamError) throw error;
+      if (scope.timedOut() || parent?.aborted === true) {
+        throw new UpstreamError("gateway_timeout");
+      }
       throw new UpstreamError("gateway_unavailable");
+    } finally {
+      scope.cleanup();
     }
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new UpstreamError(response.status >= 500 ? "gateway_unavailable" : "gateway_rejected");
-    }
-    let body: unknown;
-    try {
-      body = await readJsonBounded(response, 64 * 1024);
-    } catch {
-      throw new UpstreamError("gateway_invalid_response");
-    }
-    const result = extractResult(body);
-    if (!result) throw new UpstreamError("gateway_invalid_response");
-    return result;
   }
 }
 
-async function readJsonBounded(response: Response, maxBytes: number): Promise<unknown> {
+async function readJsonBounded(
+  response: Response,
+  maximumBytes: number,
+): Promise<unknown> {
   const advertised = response.headers.get("content-length");
-  if (advertised && Number(advertised) > maxBytes) {
-    await response.body?.cancel();
-    throw new Error("response too large");
+  if (advertised !== null) {
+    const advertisedBytes = /^\d+$/u.test(advertised)
+      ? Number(advertised)
+      : Number.NaN;
+    if (
+      !Number.isSafeInteger(advertisedBytes) ||
+      advertisedBytes > maximumBytes
+    ) {
+      await response.body?.cancel();
+      throw new Error("upstream response is too large");
+    }
   }
-  if (!response.body) throw new Error("response body missing");
+  if (response.body === null) throw new Error("upstream response has no body");
+
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
-    while (true) {
+    for (;;) {
       const item = await reader.read();
       if (item.done) break;
       size += item.value.byteLength;
-      if (size > maxBytes) {
+      if (size > maximumBytes) {
         await reader.cancel();
-        throw new Error("response too large");
+        throw new Error("upstream response is too large");
       }
       chunks.push(item.value);
     }
-  } finally { reader.releaseLock(); }
+  } finally {
+    reader.releaseLock();
+  }
+
   const bytes = new Uint8Array(size);
   let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return JSON.parse(new TextDecoder().decode(bytes));
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return JSON.parse(text) as unknown;
 }
 
 function extractResult(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  if (typeof record.output_text === "string") return record.output_text.slice(0, 16_000);
-  if (typeof record.result === "string") return record.result.slice(0, 16_000);
-  if (!Array.isArray(record.output)) return undefined;
+  if (!isRecord(value)) return undefined;
+  if (typeof value.output_text === "string") {
+    return boundedResult(value.output_text);
+  }
+  if (!Array.isArray(value.output)) return undefined;
+
   const parts: string[] = [];
-  for (const item of record.output) {
-    if (!item || typeof item !== "object") continue;
-    const content = (item as Record<string, unknown>).content;
-    if (!Array.isArray(content)) continue;
-    for (const part of content) {
-      if (part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string") parts.push((part as Record<string, string>).text);
+  for (const item of value.output) {
+    if (!isRecord(item) || item.type !== "message" || !Array.isArray(item.content)) {
+      continue;
+    }
+    for (const part of item.content) {
+      if (
+        isRecord(part) &&
+        (part.type === "output_text" || part.type === "text") &&
+        typeof part.text === "string"
+      ) {
+        parts.push(part.text);
+      }
     }
   }
-  return parts.join("\n").slice(0, 16_000) || undefined;
+  return parts.length === 0 ? undefined : boundedResult(parts.join("\n"));
+}
+
+function boundedResult(value: string): string {
+  if (new TextEncoder().encode(value).byteLength > MAX_RESULT_BYTES) {
+    throw new Error("upstream result is too large");
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
