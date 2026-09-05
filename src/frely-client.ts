@@ -112,6 +112,7 @@ export class FrelyClient implements FrelyClientPort {
       const response = await this.fetcher(url, {
         method: "GET",
         headers,
+        redirect: "error",
         signal: scope.signal,
       });
       await response.body?.cancel();
@@ -135,6 +136,7 @@ export class FrelyClient implements FrelyClientPort {
       const response = await this.fetcher(this.config.gatewayResponsesUrl, {
         method: "POST",
         headers,
+        redirect: "error",
         body: JSON.stringify({
           model: this.config.model,
           input: makePrompt(request),
@@ -227,7 +229,7 @@ async function readJsonBounded(
 }
 
 function extractResult(value: unknown): string | undefined {
-  if (!isRecord(value)) return undefined;
+  if (!isRecord(value) || value.status !== "completed") return undefined;
   if (typeof value.output_text === "string") {
     return boundedResult(value.output_text);
   }
@@ -252,8 +254,11 @@ function extractResult(value: unknown): string | undefined {
 }
 
 function boundedResult(value: string): string {
-  if (new TextEncoder().encode(value).byteLength > MAX_RESULT_BYTES) {
-    throw new Error("upstream result is too large");
+  if (
+    value.trim().length === 0 ||
+    new TextEncoder().encode(value).byteLength > MAX_RESULT_BYTES
+  ) {
+    throw new Error("upstream result is empty or too large");
   }
   return value;
 }

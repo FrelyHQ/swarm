@@ -10,20 +10,19 @@ services:
     ports:
       - "127.0.0.1:${SNAP_PORT:-8787}:8080"
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       SNAP_HOST: 0.0.0.0
       PORT: "8080"
       FRELY_GATEWAY_URL: ${FRELY_GATEWAY_URL:-http://host.docker.internal:43000}
       GATEWAY_API_KEY_FILE: /run/secrets/gateway_api_key
       GATEWAY_HOST: ${GATEWAY_HOST:-}
       SNAP_SWARM_URL: ${SNAP_SWARM_URL:-http://host.docker.internal:4111}
-      SWARM_PROBE_KEY_FILE: /run/secrets/swarm_probe_key
       SNAP_REQUIRE_SWARM: ${SNAP_REQUIRE_SWARM:-true}
+      SNAP_ALLOW_INSECURE_HTTP: ${SNAP_ALLOW_INSECURE_HTTP:-false}
       SNAP_MODEL: ${SNAP_MODEL:?set SNAP_MODEL to an enabled Frely model}
       SNAP_TIMEOUT_MS: ${SNAP_TIMEOUT_MS:-30000}
     secrets:
       - gateway_api_key
-      - swarm_probe_key
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -35,9 +34,10 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    mem_limit: ${SNAP_MEMORY_LIMIT:-256m}
-    cpus: "${SNAP_CPU_LIMIT:-0.50}"
-    pids_limit: ${SNAP_PIDS_LIMIT:-128}
+    # Fixed runtime ceilings keep the checked-in Compose contract finite.
+    mem_limit: 256m
+    cpus: "0.50"
+    pids_limit: 128
     logging:
       driver: json-file
       options:
@@ -54,5 +54,3 @@ services:
 secrets:
   gateway_api_key:
     file: ${SNAP_GATEWAY_SECRET_FILE:-./secrets/gateway_api_key}
-  swarm_probe_key:
-    file: ${SNAP_SWARM_SECRET_FILE:-./secrets/swarm_probe_key}

@@ -30,6 +30,7 @@ test("forwards one bounded non-streaming request and extracts only public text",
     seenInput = input;
     seenInit = init;
     return Response.json({
+      status: "completed",
       output: [{
         type: "message",
         content: [{ type: "output_text", text: "safe answer" }],
@@ -45,6 +46,7 @@ test("forwards one bounded non-streaming request and extracts only public text",
   expect(headers.get("authorization")).toBe("Bearer gateway-secret");
   expect(headers.get("x-request-id")).toBe("req_test");
   expect(headers.get("content-type")).toContain("application/json");
+  expect(seenInit?.redirect).toBe("error");
   const payload = JSON.parse(String(seenInit?.body));
   expect(payload.model).toBe("web3/debug");
   expect(payload.stream).toBe(false);
@@ -63,8 +65,16 @@ test("does not send the Gateway key to the liveness probe", async () => {
 });
 
 test("maps malformed and rejected upstream responses without copying their body", async () => {
-  const malformedFetcher: FetchLike = async () => Response.json({ output: [] });
+  const malformedFetcher: FetchLike = async () => Response.json({ status: "completed", output: [] });
   await expect(new FrelyClient(config, malformedFetcher).debug(debugRequest, "req_invalid"))
+    .rejects.toMatchObject({ code: "gateway_invalid_response" });
+
+  const failedFetcher: FetchLike = async () => Response.json({ status: "failed", output_text: "not a completed result" });
+  await expect(new FrelyClient(config, failedFetcher).debug(debugRequest, "req_failed"))
+    .rejects.toMatchObject({ code: "gateway_invalid_response" });
+
+  const emptyFetcher: FetchLike = async () => Response.json({ status: "completed", output_text: "   " });
+  await expect(new FrelyClient(config, emptyFetcher).debug(debugRequest, "req_empty"))
     .rejects.toMatchObject({ code: "gateway_invalid_response" });
 
   const rejectedFetcher: FetchLike = async () => new Response("private upstream detail", { status: 403 });

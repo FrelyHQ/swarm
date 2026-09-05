@@ -1,0 +1,10 @@
+services:
+  snap-debug:
+    secrets:
+      - swarm_probe_key
+    environment:
+      SWARM_PROBE_KEY_FILE: /run/secrets/swarm_probe_key
+
+secrets:
+  swarm_probe_key:
+    file: ${SNAP_SWARM_SECRET_FILE:?set SNAP_SWARM_SECRET_FILE to a local probe-key file}

@@ -53,6 +53,7 @@ const gateway = Bun.serve({
         body,
       };
       return Response.json({
+        status: "completed",
         output: [{
           type: "message",
           content: [{ type: "output_text", text: "Inspect the simulation boundary first." }],

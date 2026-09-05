@@ -33,11 +33,11 @@ to send a second debug request or to bypass the Gateway.
    ```sh
    mkdir -p secrets
    printf '%s' 'replace-with-your-development-gateway-key' > secrets/gateway_api_key
-   : > secrets/swarm_probe_key
    ```
 
-   Put a Swarm probe key in `secrets/swarm_probe_key` only when that probe
-   requires authentication.
+   If the Swarm probe requires authentication, create a separate probe-key
+   file and use the optional `compose.swarm-auth.yaml` override described
+   below.
 3. Configure the adapter:
 
    ```sh
@@ -77,7 +77,16 @@ docker compose -f compose.yaml -f compose.local.yaml up --build
 ```
 
 The sibling services remain owned by their own projects. Snap does not build,
-configure, or publish their images, databases, or internal ports.
+configure, or publish their images, databases, or internal ports. If the local
+Swarm probe needs a key, add its file explicitly:
+
+```sh
+printf '%s' 'replace-with-your-local-probe-key' > secrets/swarm_probe_key
+docker compose -f compose.yaml -f compose.local.yaml -f compose.swarm-auth.yaml up --build
+```
+
+The base Compose file has no Swarm secret mount, so hosted mode does not
+require a local probe-key file.
 
 ### Hosted Frely
 
@@ -164,9 +173,10 @@ model is needed.
 | `GATEWAY_API_KEY_FILE` | Secret path used by a direct local run. Compose mounts the configured host file at this path. |
 | `GATEWAY_API_KEY` | Non-Compose local fallback; do not use in committed files. |
 | `SNAP_SWARM_URL` | URL used only by the Swarm readiness probe. |
-| `SWARM_PROBE_KEY_FILE` | Optional Swarm probe secret path. |
+| `SWARM_PROBE_KEY_FILE` | Optional Swarm probe secret path; the auth Compose override mounts it. |
 | `SWARM_PROBE_KEY` | Non-Compose local probe-key fallback. |
 | `SNAP_REQUIRE_SWARM` | Require the Swarm probe; defaults to `true`. |
+| `SNAP_ALLOW_INSECURE_HTTP` | Permit an explicitly chosen non-local HTTP upstream; defaults to `false`. Known local hosts are allowed for development. |
 | `SNAP_MODEL` | Model selected by the local adapter configuration. |
 | `GATEWAY_HOST` | Optional local Host header for a Gateway with host admission. |
 | `SNAP_PORT` | Host-published Compose port; defaults to `8787`. |
@@ -174,7 +184,10 @@ model is needed.
 
 For direct local development without Compose, set `SNAP_HOST`, `PORT`, the
 Gateway key file or fallback, both upstream URLs, and `SNAP_MODEL` before
-running `bun run dev`.
+running `bun run dev`. The application also understands the Compose host-path
+aliases `SNAP_GATEWAY_SECRET_FILE` and `SNAP_SWARM_SECRET_FILE` for this mode.
+Remote HTTP URLs are rejected unless `SNAP_ALLOW_INSECURE_HTTP=true` is set
+explicitly.
 
 ## Safety boundary
 
@@ -199,7 +212,7 @@ bun run verify
 
 `verify` runs the public-boundary scan, TypeScript checks, focused tests, a
 production bundle build, and a local fake-upstream smoke test. After creating
-the two local secret files, validate the Compose model with:
+the local Gateway secret file, validate the base Compose model with:
 
 ```sh
 docker compose config
@@ -207,7 +220,8 @@ docker compose config
 
 The checked-in Compose file also declares finite CPU, memory, PID, restart, log,
 filesystem, capability, and loopback-publishing limits for the long-running
-adapter.
+adapter. The optional Swarm-auth and local-network overrides are explicit
+operator choices.
 
 ## License
 

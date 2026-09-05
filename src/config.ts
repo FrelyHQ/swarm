@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { readFile } from "node:fs/promises";
 
 export interface SnapConfig {
@@ -64,7 +65,11 @@ function boundedInteger(
   return parsed;
 }
 
-export function validateServiceUrl(raw: string, label: string): URL {
+export function validateServiceUrl(
+  raw: string,
+  label: string,
+  options: { readonly allowInsecureHttp?: boolean } = {},
+): URL {
   if (raw.trim() !== raw || raw.length === 0 || /[\u0000\r\n]/u.test(raw)) {
     throw new Error(`invalid ${label} URL`);
   }
@@ -84,7 +89,28 @@ export function validateServiceUrl(raw: string, label: string): URL {
   ) {
     throw new Error(`invalid ${label} URL`);
   }
+  if (
+    url.protocol === "http:" &&
+    options.allowInsecureHttp !== true &&
+    !isKnownLocalHttpHost(url.hostname)
+  ) {
+    throw new Error(`insecure ${label} URL is not allowed`);
+  }
   return url;
+}
+
+function isKnownLocalHttpHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  if (
+    normalized === "localhost" ||
+    normalized === "host.docker.internal" ||
+    normalized === "gateway-srv" ||
+    normalized === "frely-swarm"
+  ) {
+    return true;
+  }
+  if (isIP(normalized) === 4) return normalized.startsWith("127.");
+  return normalized === "::1";
 }
 
 function gatewayPaths(raw: URL): {
@@ -124,8 +150,9 @@ async function readSecret(
       return undefined;
     } catch (error) {
       if (required) throw new Error(`unavailable ${label} secret`);
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw new Error(`unavailable ${label} secret`);
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new Error(`unavailable ${label} secret`);
+      }
     }
   }
 
@@ -151,8 +178,13 @@ function modelName(value: string | undefined): string {
 export async function loadConfig(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): Promise<SnapConfig> {
+  const allowInsecureHttp = booleanValue(
+    environment.SNAP_ALLOW_INSECURE_HTTP,
+    false,
+    "SNAP_ALLOW_INSECURE_HTTP",
+  );
   const gatewayRaw = environment.FRELY_GATEWAY_URL ?? DEFAULT_GATEWAY_URL;
-  const gatewayUrl = validateServiceUrl(gatewayRaw, "gateway");
+  const gatewayUrl = validateServiceUrl(gatewayRaw, "gateway", { allowInsecureHttp });
   const paths = gatewayPaths(gatewayUrl);
   const requireSwarm = booleanValue(
     environment.SNAP_REQUIRE_SWARM,
@@ -162,18 +194,19 @@ export async function loadConfig(
   const swarmRaw = environment.SNAP_SWARM_URL;
   const swarmUrl = swarmRaw === undefined || swarmRaw === ""
     ? undefined
-    : validateServiceUrl(swarmRaw, "Swarm probe");
+    : validateServiceUrl(swarmRaw, "Swarm probe", { allowInsecureHttp });
   if (requireSwarm && swarmUrl === undefined) {
     throw new Error("Swarm probe URL is required");
   }
 
   // Compose supplies the file path. A direct local run may instead supply the
   // explicit environment fallback; do not let a missing default mount mask it.
-  const gatewaySecretPath = environment.GATEWAY_API_KEY_FILE ?? (
-    environment.GATEWAY_API_KEY === undefined
-      ? "/run/secrets/gateway_api_key"
-      : undefined
-  );
+  const gatewaySecretPath = environment.GATEWAY_API_KEY_FILE ||
+    environment.SNAP_GATEWAY_SECRET_FILE || (
+      environment.GATEWAY_API_KEY === undefined
+        ? "/run/secrets/gateway_api_key"
+        : undefined
+    );
   const gatewayApiKey = await readSecret(
     gatewaySecretPath,
     environment.GATEWAY_API_KEY,
@@ -183,7 +216,7 @@ export async function loadConfig(
   if (gatewayApiKey === undefined) throw new Error("missing gateway API key");
 
   const swarmApiKey = await readSecret(
-    environment.SWARM_PROBE_KEY_FILE,
+    environment.SWARM_PROBE_KEY_FILE || environment.SNAP_SWARM_SECRET_FILE,
     environment.SWARM_PROBE_KEY,
     false,
     "Swarm probe key",

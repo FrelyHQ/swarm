@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { loadConfig, validateServiceUrl } from "../src/config";
 
@@ -24,11 +27,13 @@ describe("configuration", () => {
     expect(versioned.swarmUrl).toBeUndefined();
   });
 
-  test("rejects URL credentials, queries, fragments, and unsupported protocols", () => {
+  test("rejects URL credentials, queries, fragments, unsupported protocols, and remote HTTP", () => {
     expect(() => validateServiceUrl("https://user:pass@gateway.example.test", "gateway")).toThrow();
     expect(() => validateServiceUrl("https://gateway.example.test?key=value", "gateway")).toThrow();
     expect(() => validateServiceUrl("https://gateway.example.test/#fragment", "gateway")).toThrow();
     expect(() => validateServiceUrl("file:///tmp/gateway", "gateway")).toThrow();
+    expect(() => validateServiceUrl("http://remote.example.test", "gateway")).toThrow(/insecure/);
+    expect(() => validateServiceUrl("http://remote.example.test", "gateway", { allowInsecureHttp: true })).not.toThrow();
   });
 
   test("requires the Swarm probe unless hosted mode explicitly disables it", async () => {
@@ -43,5 +48,20 @@ describe("configuration", () => {
       GATEWAY_API_KEY: "local-key",
       SNAP_REQUIRE_SWARM: "false",
     })).resolves.toMatchObject({ requireSwarm: false });
+  });
+
+  test("accepts the documented Compose secret-path alias for a direct local run", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "frely-snap-config-"));
+    const keyPath = join(directory, "gateway-key");
+    await writeFile(keyPath, "file-key", { mode: 0o600 });
+    try {
+      await expect(loadConfig({
+        SNAP_GATEWAY_SECRET_FILE: keyPath,
+        SNAP_REQUIRE_SWARM: "false",
+        SNAP_MODEL: "web3/debug",
+      })).resolves.toMatchObject({ gatewayApiKey: "file-key" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

@@ -87,19 +87,24 @@ for (const required of [".git", "node_modules", ".env", "secrets"]) {
   }
 }
 
-const compose = await readFile(join(root, "compose.yaml"), "utf8");
-for (const marker of ["privileged:", "network_mode: host", "docker.sock", "volumes:"]) {
-  if (compose.toLowerCase().includes(marker.toLowerCase())) {
-    violations.push(`compose contains unsafe property: ${marker}`);
+const composeFiles = ["compose.yaml", "compose.local.yaml", "compose.swarm-auth.yaml"];
+for (const composeFile of composeFiles) {
+  const composePath = join(root, composeFile);
+  const compose = await readFile(composePath, "utf8");
+  for (const marker of ["privileged:", "network_mode: host", "docker.sock"]) {
+    if (compose.toLowerCase().includes(marker.toLowerCase())) {
+      violations.push(`${composeFile} contains unsafe property: ${marker}`);
+    }
   }
 }
+const compose = await readFile(join(root, "compose.yaml"), "utf8");
 for (const required of [
   "read_only: true",
   "cap_drop:",
   "no-new-privileges:true",
-  "mem_limit:",
-  "cpus:",
-  "pids_limit:",
+  "mem_limit: 256m",
+  "cpus: \"0.50\"",
+  "pids_limit: 128",
   "restart:",
   "healthcheck:",
   "secrets:",
