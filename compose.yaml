@@ -19,7 +19,7 @@ services:
       SNAP_SWARM_URL: ${SNAP_SWARM_URL:-http://host.docker.internal:4111}
       SNAP_REQUIRE_SWARM: ${SNAP_REQUIRE_SWARM:-true}
       SNAP_ALLOW_INSECURE_HTTP: ${SNAP_ALLOW_INSECURE_HTTP:-false}
-      SNAP_MODEL: ${SNAP_MODEL:?set SNAP_MODEL to an enabled Frely model}
+      SNAP_MODEL: ${SNAP_MODEL:-replace-with-enabled-model}
       SNAP_TIMEOUT_MS: ${SNAP_TIMEOUT_MS:-30000}
     secrets:
       - gateway_api_key
