@@ -26,7 +26,7 @@ export interface VisionModelPort {
   ): Promise<Record<string, unknown>>;
 }
 
-export class OpenAIVisionModel implements VisionModelPort {
+export class FrelyResponsesModel implements VisionModelPort {
   private readonly responses: ResponsesClientPort;
 
   constructor(
@@ -35,8 +35,8 @@ export class OpenAIVisionModel implements VisionModelPort {
   ) {
     const client = responses === undefined
       ? new OpenAI({
-          apiKey: config.modelApiKey,
-          baseURL: config.modelBaseUrl.toString(),
+          apiKey: config.frelyApiKey,
+          baseURL: config.frelyBaseUrl.toString(),
           timeout: config.timeoutMs,
           maxRetries: 0,
         })
@@ -52,7 +52,7 @@ export class OpenAIVisionModel implements VisionModelPort {
     try {
       const response = await this.responses.create({
         ...request,
-        model: this.config.modelName,
+        model: this.config.frelyModel,
         stream: false,
         store: false,
       }, {

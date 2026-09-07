@@ -63,6 +63,38 @@ export function validateResponsesRequest(value: unknown, publicModel: string): R
   } as ResponsesRequest);
 }
 
+export function chatCompletionsToResponsesRequest(value: unknown, publicModel: string): ResponsesRequest {
+  if (!isRecord(value) || !Array.isArray(value.messages)) throw new InputError("invalid_request");
+  const model = requestedModel(value.model, publicModel);
+  if (value.stream !== undefined && value.stream !== false) throw new InputError("invalid_request");
+  const input = value.messages.map((message) => {
+    if (!isRecord(message) || typeof message.role !== "string") throw new InputError("invalid_request");
+    if (typeof message.content === "string") return { role: message.role, content: message.content };
+    if (!Array.isArray(message.content)) throw new InputError("invalid_request");
+    return {
+      role: message.role,
+      content: message.content.map((part) => {
+        if (!isRecord(part)) throw new InputError("invalid_request");
+        if (part.type === "text" && typeof part.text === "string") return { type: "input_text", text: part.text };
+        if (part.type === "image_url" && isRecord(part.image_url) && typeof part.image_url.url === "string") {
+          return { type: "input_image", image_url: part.image_url.url, ...(typeof part.image_url.detail === "string" ? { detail: part.image_url.detail } : {}) };
+        }
+        throw new InputError("invalid_request");
+      }),
+    };
+  });
+  const maxOutputTokens = value.max_completion_tokens ?? value.max_tokens;
+  return validateResponsesRequest({
+    model,
+    input,
+    ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
+    ...(value.temperature === undefined ? {} : { temperature: value.temperature }),
+    ...(value.top_p === undefined ? {} : { top_p: value.top_p }),
+    stream: false,
+    store: false,
+  }, publicModel);
+}
+
 function requestedModel(value: unknown, publicModel: string): string {
   if (typeof value !== "string") throw new InputError("invalid_request");
   if (value === publicModel) return value;

@@ -2,8 +2,8 @@ import { timingSafeEqual } from "node:crypto";
 
 import { loadConfig, type SwarmConfig } from "./config";
 import type { SafeErrorCode, SafeErrorResponse } from "./contracts";
-import { ModelError, OpenAIVisionModel, type VisionModelPort } from "./model-client";
-import { InputError, LIMITS, validateResponsesRequest } from "./validation";
+import { FrelyResponsesModel, ModelError, type VisionModelPort } from "./model-client";
+import { chatCompletionsToResponsesRequest, InputError, LIMITS, validateResponsesRequest } from "./validation";
 
 function json(value: unknown, status = 200, requestId?: string, headers?: HeadersInit): Response {
   const responseHeaders = new Headers({
@@ -104,7 +104,7 @@ function safeError(error: unknown): {
 
 export function createHandler(
   config: SwarmConfig,
-  model: VisionModelPort = new OpenAIVisionModel(config),
+  model: VisionModelPort = new FrelyResponsesModel(config),
 ): (request: Request) => Promise<Response> {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
@@ -116,7 +116,7 @@ export function createHandler(
     }
 
     const id = requestId(request);
-    if ((url.pathname === "/v1/models" || url.pathname === "/v1/responses") && !authorized(request, config.accessToken)) {
+    if ((url.pathname === "/v1/models" || url.pathname === "/v1/responses" || url.pathname === "/v1/chat/completions") && !authorized(request, config.accessToken)) {
       const body: SafeErrorResponse = {
         error: {
           message: "Authentication is required.",
@@ -142,6 +142,7 @@ export function createHandler(
         return json(output, 200, id);
       } catch (error) {
         const normalized = safeError(error);
+        console.error(JSON.stringify({ event: "swarm.request.failed", requestId: id, code: normalized.code }));
         const body: SafeErrorResponse = {
           error: {
             message: normalized.message,
@@ -154,11 +155,52 @@ export function createHandler(
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
+      try {
+        const input = chatCompletionsToResponsesRequest(await readBody(request), config.publicModel);
+        const output = await model.createResponse(input, id, request.signal);
+        return json(responsesToChatCompletion(output, config.publicModel), 200, id);
+      } catch (error) {
+        const normalized = safeError(error);
+        console.error(JSON.stringify({ event: "swarm.request.failed", requestId: id, code: normalized.code }));
+        const body: SafeErrorResponse = { error: { message: normalized.message, type: normalized.type, code: normalized.code, request_id: id } };
+        return json(body, normalized.status, id);
+      }
+    }
+
     if (request.method === "GET" || request.method === "POST") {
+      console.error(JSON.stringify({ event: "swarm.request.not_found", requestId: id, method: request.method, path: url.pathname }));
       return json({ error: { code: "not_found", request_id: id } }, 404, id);
     }
     return json({ error: { code: "method_not_allowed", request_id: id } }, 405, id);
   };
+}
+
+function responsesToChatCompletion(response: Record<string, unknown>, model: string): Record<string, unknown> {
+  const usage = response.usage && typeof response.usage === "object" && !Array.isArray(response.usage)
+    ? response.usage as Record<string, unknown>
+    : {};
+  const text = typeof response.output_text === "string" ? response.output_text : extractOutputText(response.output);
+  return {
+    id: typeof response.id === "string" ? response.id : `chatcmpl_${crypto.randomUUID().replaceAll("-", "")}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+    usage: {
+      prompt_tokens: Number(usage.input_tokens ?? 0),
+      completion_tokens: Number(usage.output_tokens ?? 0),
+      total_tokens: Number(usage.total_tokens ?? 0),
+    },
+  };
+}
+
+function extractOutputText(output: unknown): string {
+  if (!Array.isArray(output)) return "";
+  return output.flatMap((item) => item && typeof item === "object" && "content" in item && Array.isArray(item.content) ? item.content : [])
+    .filter((part) => part && typeof part === "object" && "text" in part && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n");
 }
 
 if (import.meta.main) {

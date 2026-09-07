@@ -2,14 +2,14 @@ import { expect, test } from "bun:test";
 
 import type { SwarmConfig } from "../src/config";
 import type { ResponsesRequest } from "../src/contracts";
-import { OpenAIVisionModel, type ResponsesClientPort } from "../src/model-client";
+import { FrelyResponsesModel, type ResponsesClientPort } from "../src/model-client";
 
 const config: SwarmConfig = Object.freeze({
   host: "127.0.0.1",
   port: 4111,
-  modelBaseUrl: new URL("https://model.example.test/v1"),
-  modelApiKey: "model-secret",
-  modelName: "gpt-5.6-luna",
+  frelyBaseUrl: new URL("http://gateway-srv:43000/v1"),
+  frelyApiKey: "frely-secret",
+  frelyModel: "dev-base",
   publicModel: "vision-basic",
   accessToken: "swarm-secret",
   timeoutMs: 1_000,
@@ -29,11 +29,11 @@ test("forces the configured backing model and preserves the virtual model at the
     async create(body, options) {
       seenBody = body;
       seenRequestId = options.headers?.["x-client-request-id"];
-      return { id: "resp_test", object: "response", status: "completed", model: "gpt-5.6-luna" };
+      return { id: "resp_test", object: "response", status: "completed", model: "dev-base" };
     },
   };
-  const result = await new OpenAIVisionModel(config, responses).createResponse(request, "req_test");
-  expect(seenBody?.model).toBe("gpt-5.6-luna");
+  const result = await new FrelyResponsesModel(config, responses).createResponse(request, "req_test");
+  expect(seenBody?.model).toBe("dev-base");
   expect(seenBody?.stream).toBe(false);
   expect(seenBody?.store).toBe(false);
   expect(seenRequestId).toBe("req_test");

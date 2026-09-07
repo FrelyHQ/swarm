@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
     init: true
     restart: unless-stopped
     ports:
@@ -13,18 +14,19 @@ services:
       NODE_ENV: production
       SWARM_HOST: 0.0.0.0
       PORT: "4111"
-      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.openai.com/v1}
-      MODEL_API_KEY_FILE: /run/secrets/model_api_key
-      MODEL_NAME: ${MODEL_NAME:-gpt-5.6-luna}
+      FRELY_BASE_URL: ${FRELY_BASE_URL:-http://gateway-srv:43000/v1}
+      FRELY_API_KEY_FILE: /run/secrets/frely_api_key
+      FRELY_MODEL: ${FRELY_MODEL:-dev-base}
       SWARM_PUBLIC_MODEL: ${SWARM_PUBLIC_MODEL:-vision-basic}
       SWARM_ACCESS_TOKEN_FILE: /run/secrets/swarm_access_token
-      MODEL_TIMEOUT_MS: ${MODEL_TIMEOUT_MS:-120000}
-      SWARM_ALLOW_INSECURE_MODEL_HTTP: ${SWARM_ALLOW_INSECURE_MODEL_HTTP:-false}
+      FRELY_TIMEOUT_MS: ${FRELY_TIMEOUT_MS:-120000}
     secrets:
-      - model_api_key
+      - frely_api_key
       - swarm_access_token
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    networks:
+      frely-dev:
+        aliases:
+          - frely-swarm-vision
     read_only: true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
@@ -49,7 +51,12 @@ services:
       start_period: 5s
 
 secrets:
-  model_api_key:
-    file: ${MODEL_API_KEY_SECRET_FILE:-./secrets/model_api_key}
+  frely_api_key:
+    file: ${FRELY_API_KEY_SECRET_FILE:-../.local/frely-compose-dev/swarm-frely-api-key}
   swarm_access_token:
-    file: ${SWARM_ACCESS_TOKEN_SECRET_FILE:-./secrets/swarm_access_token}
+    file: ${SWARM_ACCESS_TOKEN_SECRET_FILE:-../.local/frely-compose-dev/swarm-access-token}
+
+networks:
+  frely-dev:
+    name: ${FRELY_DEV_NETWORK:-frely-dev}
+    external: true

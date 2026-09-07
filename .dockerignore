@@ -10,3 +10,4 @@ secrets
 *.db-*
 *.log
 .DS_Store
+.agents

@@ -28,19 +28,19 @@ async function waitFor(url) {
   throw new Error("smoke service did not become ready");
 }
 
-const modelPort = reservePort();
+const frelyPort = reservePort();
 const swarmPort = reservePort();
-let seenModelRequest;
+let seenFrelyRequest;
 
-const model = Bun.serve({
+const frely = Bun.serve({
   hostname: "127.0.0.1",
-  port: modelPort,
+  port: frelyPort,
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method !== "POST" || url.pathname !== "/v1/responses") {
       return new Response("not found", { status: 404 });
     }
-    seenModelRequest = {
+    seenFrelyRequest = {
       authorization: request.headers.get("authorization"),
       requestId: request.headers.get("x-client-request-id"),
       body: await request.json(),
@@ -50,7 +50,7 @@ const model = Bun.serve({
       object: "response",
       created_at: 0,
       status: "completed",
-      model: "gpt-5.6-luna",
+      model: "dev-base",
       output: [{
         id: "msg_smoke",
         type: "message",
@@ -70,9 +70,9 @@ const model = Bun.serve({
 });
 
 const directory = await mkdtemp(join(tmpdir(), "frely-swarm-smoke-"));
-const modelKeyFile = join(directory, "model-key");
+const frelyKeyFile = join(directory, "frely-key");
 const accessTokenFile = join(directory, "access-token");
-await writeFile(modelKeyFile, "smoke-model-key", { mode: 0o600 });
+await writeFile(frelyKeyFile, "smoke-frely-key", { mode: 0o600 });
 await writeFile(accessTokenFile, "smoke-swarm-token", { mode: 0o600 });
 const entry = await Bun.file(join(root, "dist/server.js")).exists() ? "dist/server.js" : "src/server.ts";
 const child = Bun.spawn(["bun", entry], {
@@ -82,12 +82,12 @@ const child = Bun.spawn(["bun", entry], {
     NODE_ENV: "production",
     SWARM_HOST: "127.0.0.1",
     PORT: String(swarmPort),
-    MODEL_BASE_URL: `http://127.0.0.1:${modelPort}/v1`,
-    MODEL_API_KEY_FILE: modelKeyFile,
-    MODEL_NAME: "gpt-5.6-luna",
+    FRELY_BASE_URL: `http://127.0.0.1:${frelyPort}/v1`,
+    FRELY_API_KEY_FILE: frelyKeyFile,
+    FRELY_MODEL: "dev-base",
     SWARM_PUBLIC_MODEL: "vision-basic",
     SWARM_ACCESS_TOKEN_FILE: accessTokenFile,
-    MODEL_TIMEOUT_MS: "1000",
+    FRELY_TIMEOUT_MS: "1000",
   },
   stdin: "ignore",
   stdout: "ignore",
@@ -125,18 +125,18 @@ try {
     throw new Error(`vision response contract failed with status ${response.status}`);
   }
   if (
-    seenModelRequest?.authorization !== "Bearer smoke-model-key" ||
-    seenModelRequest?.requestId !== "req_smoke" ||
-    seenModelRequest?.body?.model !== "gpt-5.6-luna" ||
-    seenModelRequest?.body?.stream !== false ||
-    seenModelRequest?.body?.store !== false
+    seenFrelyRequest?.authorization !== "Bearer smoke-frely-key" ||
+    seenFrelyRequest?.requestId !== "req_smoke" ||
+    seenFrelyRequest?.body?.model !== "dev-base" ||
+    seenFrelyRequest?.body?.stream !== false ||
+    seenFrelyRequest?.body?.store !== false
   ) {
-    throw new Error("model forwarding contract failed");
+    throw new Error("Frely base-model forwarding contract failed");
   }
   console.log("smoke: ok");
 } finally {
   child.kill("SIGTERM");
   await child.exited.catch(() => undefined);
-  model.stop(true);
+  frely.stop(true);
   await rm(directory, { recursive: true, force: true });
 }
