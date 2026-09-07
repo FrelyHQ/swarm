@@ -4,19 +4,27 @@ import { isIP } from "node:net";
 export interface SwarmConfig {
   readonly host: string;
   readonly port: number;
-  readonly modelBaseUrl: URL;
-  readonly modelApiKey: string;
-  readonly modelName: string;
+  readonly frelyBaseUrl: URL;
+  readonly frelyApiKey: string;
+  readonly frelyModel: string;
   readonly publicModel: string;
   readonly accessToken: string;
   readonly timeoutMs: number;
 }
 
-const DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1";
-const DEFAULT_MODEL_NAME = "gpt-5.6-luna";
+const DEFAULT_FRELY_BASE_URL = "http://gateway-srv:43000/v1";
+const DEFAULT_FRELY_MODEL = "dev-base";
 const DEFAULT_PUBLIC_MODEL = "vision-basic";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_SECRET_BYTES = 8_192;
+
+function rejectGenericModelEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+): void {
+  if (Object.keys(environment).some((name) => name.startsWith("MODEL_"))) {
+    throw new Error("generic MODEL_* configuration is unsupported; use FRELY_* configuration");
+  }
+}
 
 function boundedText(
   value: string | undefined,
@@ -52,25 +60,15 @@ function boundedInteger(
   return parsed;
 }
 
-function booleanValue(value: string | undefined, fallback: boolean, label: string): boolean {
-  if (value === undefined || value === "") return fallback;
-  if (value === "true" || value === "1") return true;
-  if (value === "false" || value === "0") return false;
-  throw new Error(`invalid ${label} configuration`);
-}
-
-export function validateModelBaseUrl(
-  raw: string,
-  options: { readonly allowInsecureHttp?: boolean } = {},
-): URL {
+export function validateFrelyBaseUrl(raw: string): URL {
   if (raw.trim() !== raw || raw.length === 0 || /[\u0000\r\n]/u.test(raw)) {
-    throw new Error("invalid MODEL_BASE_URL configuration");
+    throw new Error("invalid FRELY_BASE_URL configuration");
   }
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new Error("invalid MODEL_BASE_URL configuration");
+    throw new Error("invalid FRELY_BASE_URL configuration");
   }
   if (
     (url.protocol !== "http:" && url.protocol !== "https:") ||
@@ -80,23 +78,21 @@ export function validateModelBaseUrl(
     url.hash !== "" ||
     url.hostname === ""
   ) {
-    throw new Error("invalid MODEL_BASE_URL configuration");
+    throw new Error("invalid FRELY_BASE_URL configuration");
   }
-  if (
-    url.protocol === "http:" &&
-    options.allowInsecureHttp !== true &&
-    !isKnownLocalHost(url.hostname)
-  ) {
-    throw new Error("insecure MODEL_BASE_URL is not allowed");
+  const pathname = url.pathname.replace(/\/+$/u, "");
+  if (!isKnownLocalFrelyHost(url.hostname) || pathname !== "/v1") {
+    throw new Error("FRELY_BASE_URL must be the local Frely /v1 entry");
   }
   return new URL(url.toString().replace(/\/+$/u, ""));
 }
 
-function isKnownLocalHost(hostname: string): boolean {
+function isKnownLocalFrelyHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
-  if (normalized === "localhost" || normalized === "host.docker.internal") return true;
+  if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
+  if (normalized === "host.docker.internal" || normalized === "gateway-srv") return true;
   if (isIP(normalized) === 4) return normalized.startsWith("127.");
-  return normalized === "::1";
+  return normalized === "::1" || normalized === "[::1]";
 }
 
 async function readSecret(
@@ -141,24 +137,17 @@ function publicModel(value: string | undefined): string {
 export async function loadConfig(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): Promise<SwarmConfig> {
-  const allowInsecureHttp = booleanValue(
-    environment.SWARM_ALLOW_INSECURE_MODEL_HTTP,
-    false,
-    "SWARM_ALLOW_INSECURE_MODEL_HTTP",
-  );
+  rejectGenericModelEnvironment(environment);
   return Object.freeze({
     host: boundedText(environment.SWARM_HOST, "127.0.0.1", "SWARM_HOST", 253),
     port: boundedInteger(environment.PORT, 4111, 1, 65_535, "PORT"),
-    modelBaseUrl: validateModelBaseUrl(
-      environment.MODEL_BASE_URL ?? DEFAULT_MODEL_BASE_URL,
-      { allowInsecureHttp },
+    frelyBaseUrl: validateFrelyBaseUrl(environment.FRELY_BASE_URL ?? DEFAULT_FRELY_BASE_URL),
+    frelyApiKey: await readSecret(
+      environment.FRELY_API_KEY_FILE,
+      environment.FRELY_API_KEY,
+      "Frely API key",
     ),
-    modelApiKey: await readSecret(
-      environment.MODEL_API_KEY_FILE,
-      environment.MODEL_API_KEY,
-      "model API key",
-    ),
-    modelName: modelName(environment.MODEL_NAME, DEFAULT_MODEL_NAME, "MODEL_NAME"),
+    frelyModel: modelName(environment.FRELY_MODEL, DEFAULT_FRELY_MODEL, "FRELY_MODEL"),
     publicModel: publicModel(environment.SWARM_PUBLIC_MODEL),
     accessToken: await readSecret(
       environment.SWARM_ACCESS_TOKEN_FILE,
@@ -166,11 +155,11 @@ export async function loadConfig(
       "Swarm access token",
     ),
     timeoutMs: boundedInteger(
-      environment.MODEL_TIMEOUT_MS,
+      environment.FRELY_TIMEOUT_MS,
       DEFAULT_TIMEOUT_MS,
       250,
       10 * 60_000,
-      "MODEL_TIMEOUT_MS",
+      "FRELY_TIMEOUT_MS",
     ),
   });
 }

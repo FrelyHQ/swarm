@@ -7,9 +7,9 @@ import { createHandler } from "../src/server";
 const config: SwarmConfig = Object.freeze({
   host: "127.0.0.1",
   port: 4111,
-  modelBaseUrl: new URL("https://model.example.test/v1"),
-  modelApiKey: "model-secret",
-  modelName: "gpt-5.6-luna",
+  frelyBaseUrl: new URL("http://gateway-srv:43000/v1"),
+  frelyApiKey: "frely-secret",
+  frelyModel: "dev-base",
   publicModel: "vision-basic",
   accessToken: "swarm-secret",
   timeoutMs: 1_000,
@@ -107,5 +107,30 @@ describe("HTTP boundary", () => {
       output_text: "A red bicycle.",
     });
     expect(response.headers.get("x-request-id")).toBe(seenRequestId);
+  });
+
+  test("adapts the CPA chat-completions transport to the Responses model port", async () => {
+    let seenInput: unknown;
+    const handler = createHandler(config, model({
+      createResponse: async (input) => {
+        seenInput = input;
+        return { id: "resp_test", output_text: "A red bicycle.", usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } };
+      },
+    }));
+    const response = await handler(request("/v1/chat/completions", {
+      model: "vision-basic",
+      messages: [{ role: "user", content: [
+        { type: "text", text: "Describe the image." },
+        { type: "image_url", image_url: { url: "https://images.example.test/demo.png" } },
+      ] }],
+      stream: false,
+    }));
+    expect(response.status).toBe(200);
+    expect(seenInput).toMatchObject({ model: "vision-basic", input: [{ content: [{ type: "input_text" }, { type: "input_image" }] }] });
+    expect(await response.json()).toMatchObject({
+      object: "chat.completion",
+      choices: [{ message: { role: "assistant", content: "A red bicycle." } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
   });
 });

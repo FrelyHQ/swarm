@@ -4,7 +4,15 @@ import { readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const root = new URL("..", import.meta.url).pathname;
-const forbiddenPaths = [".mastra", "SNAPSHOT.md", "src/mastra", "src/adapters", "tests/mcp.test.ts"];
+const forbiddenPaths = [
+  ".agents",
+  ".DS_Store",
+  ".mastra",
+  "SNAPSHOT.md",
+  "src/mastra",
+  "src/adapters",
+  "tests/mcp.test.ts",
+];
 const forbiddenMarkers = [
   "@mastra",
   "@modelcontextprotocol",
@@ -36,7 +44,11 @@ const [listingOutput, listingError, listingExit] = await Promise.all([
   listing.exited,
 ]);
 if (listingExit !== 0) throw new Error(`unable to list publishable files: ${listingError.trim()}`);
-const files = listingOutput.split("\0").filter(Boolean).map((name) => join(root, name));
+const listedFiles = listingOutput.split("\0").filter(Boolean).map((name) => join(root, name));
+const files = [];
+for (const file of listedFiles) {
+  if (await Bun.file(file).exists()) files.push(file);
+}
 
 const violations = [];
 for (const forbiddenPath of forbiddenPaths) {
@@ -69,8 +81,13 @@ for (const section of ["dependencies", "optionalDependencies", "peerDependencies
 }
 
 const dockerignore = await readFile(join(root, ".dockerignore"), "utf8");
-for (const required of [".git", "node_modules", ".env", "secrets"]) {
+for (const required of [".git", "node_modules", ".env", "secrets", ".DS_Store", ".agents"]) {
   if (!dockerignore.split(/\r?\n/u).includes(required)) violations.push(`.dockerignore is missing: ${required}`);
+}
+
+const gitignore = await readFile(join(root, ".gitignore"), "utf8");
+for (const required of [".DS_Store", ".agents/"]) {
+  if (!gitignore.split(/\r?\n/u).includes(required)) violations.push(`.gitignore is missing: ${required}`);
 }
 
 const compose = await readFile(join(root, "compose.yaml"), "utf8");
@@ -88,9 +105,10 @@ for (const required of [
   "pids_limit: 128",
   "restart:",
   "healthcheck:",
-  "model_api_key",
+  "frely_api_key",
   "swarm_access_token",
   "127.0.0.1:",
+  "gateway-srv",
 ]) {
   if (!compose.includes(required)) violations.push(`compose is missing: ${required}`);
 }

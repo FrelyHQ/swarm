@@ -1,0 +1,9 @@
+services:
+  swarm-vision:
+    build:
+      target: dev
+    command: ["bun", "--watch", "src/server.ts"]
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./src:/app/src:ro
