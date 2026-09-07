@@ -1,0 +1,4 @@
+interface:
+  display_name: "Configure Swarm Development Environment"
+  short_description: "Configure Swarm dependencies and local environment"
+  default_prompt: "Use $configure-development-environment to configure this Swarm checkout for local development."
