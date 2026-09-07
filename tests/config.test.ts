@@ -3,65 +3,50 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { loadConfig, validateServiceUrl } from "../src/config";
+import { loadConfig, validateModelBaseUrl } from "../src/config";
 
 describe("configuration", () => {
-  test("normalizes root and /v1 Gateway URLs to the public paths", async () => {
-    const root = await loadConfig({
-      FRELY_GATEWAY_URL: "https://gateway.example.test",
-      SNAP_SWARM_URL: "https://swarm.example.test/",
-      SNAP_MODEL: "web3/debug",
-      GATEWAY_API_KEY: "local-key",
+  test("uses the Luna-backed vision virtual-model defaults", async () => {
+    const config = await loadConfig({
+      MODEL_API_KEY: "model-key",
+      SWARM_ACCESS_TOKEN: "swarm-token",
     });
-    expect(root.gatewayHealthUrl.toString()).toBe("https://gateway.example.test/health");
-    expect(root.gatewayResponsesUrl.toString()).toBe("https://gateway.example.test/v1/responses");
-
-    const versioned = await loadConfig({
-      FRELY_GATEWAY_URL: "https://gateway.example.test/v1",
-      SNAP_REQUIRE_SWARM: "false",
-      SNAP_MODEL: "web3/debug",
-      GATEWAY_API_KEY: "local-key",
-    });
-    expect(versioned.gatewayHealthUrl.toString()).toBe("https://gateway.example.test/health");
-    expect(versioned.gatewayResponsesUrl.toString()).toBe("https://gateway.example.test/v1/responses");
-    expect(versioned.swarmUrl).toBeUndefined();
+    expect(config.modelBaseUrl.toString()).toBe("https://api.openai.com/v1");
+    expect(config.modelName).toBe("gpt-5.6-luna");
+    expect(config.publicModel).toBe("vision-basic");
+    expect(config.port).toBe(4111);
   });
 
-  test("rejects URL credentials, queries, fragments, unsupported protocols, and remote HTTP", () => {
-    expect(() => validateServiceUrl("https://user:pass@gateway.example.test", "gateway")).toThrow();
-    expect(() => validateServiceUrl("https://gateway.example.test?key=value", "gateway")).toThrow();
-    expect(() => validateServiceUrl("https://gateway.example.test/#fragment", "gateway")).toThrow();
-    expect(() => validateServiceUrl("file:///tmp/gateway", "gateway")).toThrow();
-    expect(() => validateServiceUrl("http://remote.example.test", "gateway")).toThrow(/insecure/);
-    expect(() => validateServiceUrl("http://remote.example.test", "gateway", { allowInsecureHttp: true })).not.toThrow();
+  test("rejects URL credentials, fragments, unsupported protocols, and remote HTTP", () => {
+    expect(() => validateModelBaseUrl("https://user:pass@model.example.test/v1")).toThrow();
+    expect(() => validateModelBaseUrl("https://model.example.test/v1#fragment")).toThrow();
+    expect(() => validateModelBaseUrl("file:///tmp/model")).toThrow();
+    expect(() => validateModelBaseUrl("http://model.example.test/v1")).toThrow(/insecure/);
+    expect(() => validateModelBaseUrl("http://model.example.test/v1", { allowInsecureHttp: true })).not.toThrow();
+    expect(() => validateModelBaseUrl("http://127.0.0.1:8080/v1")).not.toThrow();
   });
 
-  test("requires the Swarm probe unless hosted mode explicitly disables it", async () => {
-    await expect(loadConfig({
-      SNAP_MODEL: "web3/debug",
-      GATEWAY_API_KEY: "local-key",
-      SNAP_REQUIRE_SWARM: "true",
-    })).rejects.toThrow("Swarm probe URL is required");
-
-    await expect(loadConfig({
-      SNAP_MODEL: "web3/debug",
-      GATEWAY_API_KEY: "local-key",
-      SNAP_REQUIRE_SWARM: "false",
-    })).resolves.toMatchObject({ requireSwarm: false });
-  });
-
-  test("accepts the documented Compose secret-path alias for a direct local run", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "frely-snap-config-"));
-    const keyPath = join(directory, "gateway-key");
-    await writeFile(keyPath, "file-key", { mode: 0o600 });
+  test("reads both independent credentials from files", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "frely-swarm-config-"));
+    const modelKey = join(directory, "model-key");
+    const accessToken = join(directory, "access-token");
+    await writeFile(modelKey, "model-secret", { mode: 0o600 });
+    await writeFile(accessToken, "swarm-secret", { mode: 0o600 });
     try {
       await expect(loadConfig({
-        SNAP_GATEWAY_SECRET_FILE: keyPath,
-        SNAP_REQUIRE_SWARM: "false",
-        SNAP_MODEL: "web3/debug",
-      })).resolves.toMatchObject({ gatewayApiKey: "file-key" });
+        MODEL_API_KEY_FILE: modelKey,
+        SWARM_ACCESS_TOKEN_FILE: accessToken,
+      })).resolves.toMatchObject({
+        modelApiKey: "model-secret",
+        accessToken: "swarm-secret",
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  test("requires model and service credentials without conflating them", async () => {
+    await expect(loadConfig({ SWARM_ACCESS_TOKEN: "swarm-token" })).rejects.toThrow("model API key");
+    await expect(loadConfig({ MODEL_API_KEY: "model-key" })).rejects.toThrow("Swarm access token");
   });
 });
