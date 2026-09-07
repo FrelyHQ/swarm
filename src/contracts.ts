@@ -1,49 +1,25 @@
-export type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | { [key: string]: JsonValue };
-
-export interface DebugRequest {
-  readonly project: {
-    readonly id: string;
-    readonly chain: string;
-    readonly network: string;
-  };
-  readonly problem: {
-    readonly title: string;
-    readonly description: string;
-  };
-  readonly context?: JsonValue;
-  readonly question: string;
-}
-
-export interface DebugResult {
-  readonly request_id: string;
-  readonly result: string;
-}
-
-export type ProbeStatus = "ready" | "unavailable" | "not_configured";
-
-export interface ReadyResponse {
-  readonly status: "ready" | "not_ready";
+export interface ResponsesRequest {
+  readonly model: string;
+  readonly input: unknown;
+  readonly stream: false;
+  readonly store: false;
+  readonly [key: string]: unknown;
 }
 
 export type SafeErrorCode =
   | "invalid_request"
   | "body_too_large"
-  | "sensitive_input"
-  | "gateway_timeout"
-  | "gateway_unavailable"
-  | "gateway_rejected"
-  | "gateway_invalid_response"
+  | "unauthorized"
+  | "upstream_timeout"
+  | "upstream_unavailable"
+  | "upstream_invalid_response"
   | "internal_error";
 
 export interface SafeErrorResponse {
   readonly error: {
+    readonly message: string;
+    readonly type: "invalid_request_error" | "authentication_error" | "upstream_error" | "server_error";
     readonly code: SafeErrorCode;
-    readonly request_id?: string;
+    readonly request_id: string;
   };
 }

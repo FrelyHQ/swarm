@@ -1,56 +1,49 @@
 import { describe, expect, test } from "bun:test";
 
-import { InputError } from "../src/validation";
-import { LIMITS, makePrompt, validateDebugRequest } from "../src/validation";
+import { InputError, validateResponsesRequest } from "../src/validation";
 
-const baseRequest = {
-  project: { id: "app", chain: "ethereum", network: "local" },
-  problem: { title: "Failure", description: "A bounded example." },
-  question: "What should I inspect?",
+const validRequest = {
+  model: "vision-basic",
+  input: [{
+    role: "user",
+    content: [
+      { type: "input_text", text: "Describe this image." },
+      { type: "input_image", image_url: "https://images.example.test/demo.png" },
+    ],
+  }],
 };
 
-describe("debug input validation", () => {
-  test("accepts Web3 identifiers such as tokenId and creates an untrusted prompt", () => {
-    const request = validateDebugRequest({
-      ...baseRequest,
-      context: { tokenId: 7, transactionHash: "0x00", logs: [{ event: "Transfer" }] },
+describe("Responses request validation", () => {
+  test("accepts direct and Frely-prefixed virtual-model requests", () => {
+    expect(validateResponsesRequest(validRequest, "vision-basic")).toMatchObject({
+      model: "vision-basic",
+      stream: false,
+      store: false,
     });
-    expect(makePrompt(request)).toContain("untrusted data");
-    expect(request.context).toEqual({ tokenId: 7, transactionHash: "0x00", logs: [{ event: "Transfer" }] });
+    expect(validateResponsesRequest({ ...validRequest, model: "swarm/vision-basic" }, "vision-basic").model)
+      .toBe("swarm/vision-basic");
   });
 
-  test("rejects sensitive keys even when their values are nested objects", () => {
-    expect(() => validateDebugRequest({
-      ...baseRequest,
-      context: { credentials: { privateKey: { encrypted: true } } },
-    })).toThrowError(new InputError("sensitive_input"));
+  test("requires an image and the configured public model", () => {
+    expect(() => validateResponsesRequest({
+      ...validRequest,
+      input: [{ role: "user", content: [{ type: "input_text", text: "Text only" }] }],
+    }, "vision-basic")).toThrowError(new InputError("invalid_request"));
+    expect(() => validateResponsesRequest({ ...validRequest, model: "gpt-5.6-luna" }, "vision-basic"))
+      .toThrowError(new InputError("invalid_request"));
   });
 
-  test("rejects sensitive value shapes", () => {
-    expect(() => validateDebugRequest({
-      ...baseRequest,
-      context: { note: "Bearer abcdefghijkl" },
-    })).toThrowError(new InputError("sensitive_input"));
-    expect(() => validateDebugRequest({
-      ...baseRequest,
-      context: { note: "eyJheader-value.payload-value.signature-value" },
-    })).toThrowError(new InputError("sensitive_input"));
-  });
-
-  test("rejects prototype-changing keys, unknown fields, and excessive nesting", () => {
-    expect(() => validateDebugRequest({
-      ...baseRequest,
-      context: JSON.parse('{"__proto__":{"polluted":true}}'),
-    })).toThrowError(new InputError("invalid_request"));
-    expect(() => validateDebugRequest({ ...baseRequest, model: "other" })).toThrowError(
-      new InputError("invalid_request"),
-    );
-    let nested: unknown = "value";
-    for (let index = 0; index <= LIMITS.contextDepth; index += 1) {
-      nested = { child: nested };
-    }
-    expect(() => validateDebugRequest({ ...baseRequest, context: nested })).toThrowError(
-      new InputError("invalid_request"),
-    );
+  test("rejects streaming, storage, control fields, and malformed image URLs", () => {
+    expect(() => validateResponsesRequest({ ...validRequest, stream: true }, "vision-basic")).toThrow();
+    expect(() => validateResponsesRequest({ ...validRequest, store: true }, "vision-basic")).toThrow();
+    expect(() => validateResponsesRequest({ ...validRequest, api_key: "not-allowed" }, "vision-basic")).toThrow();
+    expect(() => validateResponsesRequest({
+      ...validRequest,
+      input: [{ content: [{ type: "input_image", image_url: "file:///tmp/image.png" }] }],
+    }, "vision-basic")).toThrow();
+    expect(() => validateResponsesRequest({
+      ...validRequest,
+      input: [{ content: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }] }],
+    }, "vision-basic")).toThrow();
   });
 });

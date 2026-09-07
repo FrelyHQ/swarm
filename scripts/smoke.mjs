@@ -8,22 +8,18 @@ const root = resolve(import.meta.dir, "..");
 const timeoutMs = 10_000;
 
 function reservePort() {
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: () => new Response("reserved"),
-  });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") });
   const port = server.port;
   server.stop(true);
   return port;
 }
 
-async function waitFor(url, predicate) {
+async function waitFor(url) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(500) });
-      if (await predicate(response)) return;
+      if (response.ok) return;
     } catch {
       // The child is still starting.
     }
@@ -32,63 +28,66 @@ async function waitFor(url, predicate) {
   throw new Error("smoke service did not become ready");
 }
 
-const gatewayPort = reservePort();
+const modelPort = reservePort();
 const swarmPort = reservePort();
-const snapPort = reservePort();
-let seenGatewayRequest;
+let seenModelRequest;
 
-const gateway = Bun.serve({
+const model = Bun.serve({
   hostname: "127.0.0.1",
-  port: gatewayPort,
+  port: modelPort,
   async fetch(request) {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") {
-      return Response.json({ ok: true });
+    if (request.method !== "POST" || url.pathname !== "/v1/responses") {
+      return new Response("not found", { status: 404 });
     }
-    if (request.method === "POST" && url.pathname === "/v1/responses") {
-      const body = await request.json();
-      seenGatewayRequest = {
-        authorization: request.headers.get("authorization"),
-        requestId: request.headers.get("x-request-id"),
-        body,
-      };
-      return Response.json({
+    seenModelRequest = {
+      authorization: request.headers.get("authorization"),
+      requestId: request.headers.get("x-client-request-id"),
+      body: await request.json(),
+    };
+    return Response.json({
+      id: "resp_smoke",
+      object: "response",
+      created_at: 0,
+      status: "completed",
+      model: "gpt-5.6-luna",
+      output: [{
+        id: "msg_smoke",
+        type: "message",
+        role: "assistant",
         status: "completed",
-        output: [{
-          type: "message",
-          content: [{ type: "output_text", text: "Inspect the simulation boundary first." }],
-        }],
-      });
-    }
-    return new Response("not found", { status: 404 });
+        content: [{ type: "output_text", text: "A red bicycle beside a brick wall.", annotations: [] }],
+      }],
+      usage: {
+        input_tokens: 12,
+        input_tokens_details: { cached_tokens: 0 },
+        output_tokens: 8,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: 20,
+      },
+    });
   },
 });
 
-const swarm = Bun.serve({
-  hostname: "127.0.0.1",
-  port: swarmPort,
-  fetch: () => Response.json({ ok: true }),
-});
-
-const temporaryDirectory = await mkdtemp(join(tmpdir(), "frely-snap-smoke-"));
-const secretFile = join(temporaryDirectory, "gateway-key");
-await writeFile(secretFile, "smoke-gateway-key", { mode: 0o600 });
-const entry = await Bun.file(join(root, "dist/server.js")).exists()
-  ? "dist/server.js"
-  : "src/server.ts";
+const directory = await mkdtemp(join(tmpdir(), "frely-swarm-smoke-"));
+const modelKeyFile = join(directory, "model-key");
+const accessTokenFile = join(directory, "access-token");
+await writeFile(modelKeyFile, "smoke-model-key", { mode: 0o600 });
+await writeFile(accessTokenFile, "smoke-swarm-token", { mode: 0o600 });
+const entry = await Bun.file(join(root, "dist/server.js")).exists() ? "dist/server.js" : "src/server.ts";
 const child = Bun.spawn(["bun", entry], {
   cwd: root,
   env: {
     ...process.env,
     NODE_ENV: "production",
-    SNAP_HOST: "127.0.0.1",
-    PORT: String(snapPort),
-    FRELY_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}`,
-    GATEWAY_API_KEY_FILE: secretFile,
-    SNAP_SWARM_URL: `http://127.0.0.1:${swarmPort}`,
-    SNAP_REQUIRE_SWARM: "true",
-    SNAP_MODEL: "debug/model",
-    SNAP_TIMEOUT_MS: "1000",
+    SWARM_HOST: "127.0.0.1",
+    PORT: String(swarmPort),
+    MODEL_BASE_URL: `http://127.0.0.1:${modelPort}/v1`,
+    MODEL_API_KEY_FILE: modelKeyFile,
+    MODEL_NAME: "gpt-5.6-luna",
+    SWARM_PUBLIC_MODEL: "vision-basic",
+    SWARM_ACCESS_TOKEN_FILE: accessTokenFile,
+    MODEL_TIMEOUT_MS: "1000",
   },
   stdin: "ignore",
   stdout: "ignore",
@@ -96,62 +95,48 @@ const child = Bun.spawn(["bun", entry], {
 });
 
 try {
-  const baseUrl = `http://127.0.0.1:${snapPort}`;
-  await waitFor(`${baseUrl}/healthz`, async (response) => response.ok);
+  const baseUrl = `http://127.0.0.1:${swarmPort}`;
+  await waitFor(`${baseUrl}/healthz`);
+  const models = await (await fetch(`${baseUrl}/v1/models`, {
+    headers: { authorization: "Bearer smoke-swarm-token" },
+  })).json();
+  if (models.data?.[0]?.id !== "vision-basic") throw new Error("model catalog contract failed");
 
-  const health = await (await fetch(`${baseUrl}/healthz`)).json();
-  if (health.status !== "ok") throw new Error("liveness contract failed");
-
-  const readinessResponse = await fetch(`${baseUrl}/readyz`);
-  const readiness = await readinessResponse.json();
-  if (!readinessResponse.ok || readiness.status !== "ready") {
-    throw new Error("readiness contract failed");
-  }
-
-  const debugResponse = await fetch(`${baseUrl}/v1/debug`, {
+  const response = await fetch(`${baseUrl}/v1/responses`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      authorization: "Bearer smoke-swarm-token",
+      "content-type": "application/json",
+      "x-request-id": "req_smoke",
+    },
     body: JSON.stringify({
-      project: { id: "demo", chain: "ethereum", network: "local" },
-      problem: { title: "Simulation mismatch", description: "A bounded example failure." },
-      context: { step: "simulation", tokenId: 7 },
-      question: "What should I inspect first?",
+      model: "vision-basic",
+      input: [{
+        role: "user",
+        content: [
+          { type: "input_text", text: "Describe the image." },
+          { type: "input_image", image_url: "https://images.example.test/bicycle.png" },
+        ],
+      }],
     }),
   });
-  const debug = await debugResponse.json();
-  if (!debugResponse.ok || typeof debug.request_id !== "string" || !debug.result) {
-    throw new Error("debug request contract failed");
+  const body = await response.json();
+  if (!response.ok || body.model !== "vision-basic" || body.output_text.length === 0) {
+    throw new Error(`vision response contract failed with status ${response.status}`);
   }
   if (
-    seenGatewayRequest?.authorization !== "Bearer smoke-gateway-key" ||
-    seenGatewayRequest?.body?.model !== "debug/model" ||
-    seenGatewayRequest?.body?.stream !== false ||
-    seenGatewayRequest?.body?.store !== false ||
-    typeof seenGatewayRequest?.requestId !== "string"
+    seenModelRequest?.authorization !== "Bearer smoke-model-key" ||
+    seenModelRequest?.requestId !== "req_smoke" ||
+    seenModelRequest?.body?.model !== "gpt-5.6-luna" ||
+    seenModelRequest?.body?.stream !== false ||
+    seenModelRequest?.body?.store !== false
   ) {
-    throw new Error("gateway forwarding contract failed");
+    throw new Error("model forwarding contract failed");
   }
-
-  const sensitiveResponse = await fetch(`${baseUrl}/v1/debug`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      project: { id: "demo", chain: "ethereum", network: "local" },
-      problem: { title: "Invalid", description: "Invalid" },
-      context: { privateKey: "not-a-real-key" },
-      question: "help",
-    }),
-  });
-  const sensitive = await sensitiveResponse.json();
-  if (sensitiveResponse.status !== 400 || sensitive.error?.code !== "sensitive_input") {
-    throw new Error("sensitive input contract failed");
-  }
-
   console.log("smoke: ok");
 } finally {
   child.kill("SIGTERM");
   await child.exited.catch(() => undefined);
-  gateway.stop(true);
-  swarm.stop(true);
-  await rm(temporaryDirectory, { recursive: true, force: true });
+  model.stop(true);
+  await rm(directory, { recursive: true, force: true });
 }

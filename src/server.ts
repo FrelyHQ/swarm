@@ -1,44 +1,39 @@
-import { loadConfig, type SnapConfig } from "./config";
-import {
-  type SafeErrorCode,
-  type SafeErrorResponse,
-} from "./contracts";
-import { FrelyClient, type FrelyClientPort, UpstreamError } from "./frely-client";
-import { InputError, LIMITS, validateDebugRequest } from "./validation";
+import { timingSafeEqual } from "node:crypto";
 
-function json(
-  value: unknown,
-  status = 200,
-  requestId?: string,
-): Response {
+import { loadConfig, type SwarmConfig } from "./config";
+import type { SafeErrorCode, SafeErrorResponse } from "./contracts";
+import { ModelError, OpenAIVisionModel, type VisionModelPort } from "./model-client";
+import { InputError, LIMITS, validateResponsesRequest } from "./validation";
+
+function json(value: unknown, status = 200, requestId?: string, headers?: HeadersInit): Response {
+  const responseHeaders = new Headers({
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    ...(requestId === undefined ? {} : { "x-request-id": requestId }),
+  });
+  new Headers(headers).forEach((headerValue, headerName) => {
+    responseHeaders.set(headerName, headerValue);
+  });
   return new Response(JSON.stringify(value), {
     status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      ...(requestId === undefined ? {} : { "x-request-id": requestId }),
-    },
+    headers: responseHeaders,
   });
 }
 
-function newRequestId(): string {
+function requestId(request: Request): string {
+  const supplied = request.headers.get("x-request-id");
+  if (supplied && /^[A-Za-z0-9._:-]{1,128}$/u.test(supplied)) return supplied;
   return `req_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
 async function readBody(request: Request): Promise<unknown> {
-  const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim();
-  if (contentType !== "application/json") {
-    throw new InputError("invalid_request");
-  }
-
-  const contentLength = request.headers.get("content-length");
-  if (contentLength !== null) {
-    if (!/^\d+$/u.test(contentLength) || Number(contentLength) > LIMITS.bodyBytes) {
-      throw new InputError("body_too_large");
-    }
+  const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/json") throw new InputError("invalid_request");
+  const advertised = request.headers.get("content-length");
+  if (advertised !== null && (!/^\d+$/u.test(advertised) || Number(advertised) > LIMITS.bodyBytes)) {
+    throw new InputError("body_too_large");
   }
   if (request.body === null) throw new InputError("invalid_request");
-
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -56,101 +51,119 @@ async function readBody(request: Request): Promise<unknown> {
   } finally {
     reader.releaseLock();
   }
-
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new InputError("invalid_request");
-  }
-  try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
   } catch {
     throw new InputError("invalid_request");
   }
 }
 
-function errorCode(error: unknown): SafeErrorCode {
-  if (error instanceof InputError) return error.code;
-  if (error instanceof UpstreamError) return error.code;
-  return "internal_error";
+function authorized(request: Request, token: string): boolean {
+  const value = request.headers.get("authorization");
+  if (!value?.startsWith("Bearer ")) return false;
+  const supplied = Buffer.from(value.slice("Bearer ".length));
+  const expected = Buffer.from(token);
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
-function errorStatus(code: SafeErrorCode): number {
-  switch (code) {
-    case "body_too_large":
-      return 413;
-    case "gateway_timeout":
-      return 504;
-    case "gateway_unavailable":
-      return 503;
-    case "gateway_rejected":
-    case "gateway_invalid_response":
-      return 502;
-    case "internal_error":
-      return 500;
-    default:
-      return 400;
+function safeError(error: unknown): {
+  code: SafeErrorCode;
+  status: number;
+  type: SafeErrorResponse["error"]["type"];
+  message: string;
+} {
+  if (error instanceof InputError) {
+    return {
+      code: error.code,
+      status: error.code === "body_too_large" ? 413 : 400,
+      type: "invalid_request_error",
+      message: error.code === "body_too_large" ? "Request body is too large." : "The request is invalid.",
+    };
   }
+  if (error instanceof ModelError) {
+    return {
+      code: error.code,
+      status: error.code === "upstream_timeout" ? 504 : 502,
+      type: "upstream_error",
+      message: error.code === "upstream_timeout" ? "The model request timed out." : "The model service is unavailable.",
+    };
+  }
+  return {
+    code: "internal_error",
+    status: 500,
+    type: "server_error",
+    message: "The server could not complete the request.",
+  };
 }
 
 export function createHandler(
-  config: SnapConfig,
-  client: FrelyClientPort = new FrelyClient(config),
+  config: SwarmConfig,
+  model: VisionModelPort = new OpenAIVisionModel(config),
 ): (request: Request) => Promise<Response> {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/healthz") {
+    if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
       return json({ status: "ok" });
     }
-
     if (request.method === "GET" && url.pathname === "/readyz") {
-      const [gateway, swarm] = await Promise.all([
-        client.probeGateway(request.signal).catch(() => "unavailable" as const),
-        config.requireSwarm
-          ? client.probeSwarm(request.signal).catch(() => "unavailable" as const)
-          : Promise.resolve("not_configured" as const),
-      ]);
-      const ready = gateway === "ready" &&
-        (!config.requireSwarm || swarm === "ready");
-      return json({ status: ready ? "ready" : "not_ready" }, ready ? 200 : 503);
+      return json({ status: "ready", model: config.publicModel });
     }
 
-    if (request.method === "POST" && url.pathname === "/v1/debug") {
-      const id = newRequestId();
+    const id = requestId(request);
+    if ((url.pathname === "/v1/models" || url.pathname === "/v1/responses") && !authorized(request, config.accessToken)) {
+      const body: SafeErrorResponse = {
+        error: {
+          message: "Authentication is required.",
+          type: "authentication_error",
+          code: "unauthorized",
+          request_id: id,
+        },
+      };
+      return json(body, 401, id, { "www-authenticate": "Bearer" });
+    }
+
+    if (request.method === "GET" && url.pathname === "/v1/models") {
+      return json({
+        object: "list",
+        data: [{ id: config.publicModel, object: "model", created: 0, owned_by: "frely-swarm" }],
+      }, 200, id);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/responses") {
       try {
-        const body = validateDebugRequest(await readBody(request));
-        const result = await client.debug(body, id, request.signal);
-        return json({ request_id: id, result }, 200, id);
+        const input = validateResponsesRequest(await readBody(request), config.publicModel);
+        const output = await model.createResponse(input, id, request.signal);
+        return json(output, 200, id);
       } catch (error) {
-        const code = errorCode(error);
-        const response: SafeErrorResponse = {
-          error: { code, request_id: id },
+        const normalized = safeError(error);
+        const body: SafeErrorResponse = {
+          error: {
+            message: normalized.message,
+            type: normalized.type,
+            code: normalized.code,
+            request_id: id,
+          },
         };
-        return json(response, errorStatus(code), id);
+        return json(body, normalized.status, id);
       }
     }
 
     if (request.method === "GET" || request.method === "POST") {
-      return json({ error: { code: "not_found" } }, 404);
+      return json({ error: { code: "not_found", request_id: id } }, 404, id);
     }
-    return json({ error: { code: "method_not_allowed" } }, 405);
+    return json({ error: { code: "method_not_allowed", request_id: id } }, 405, id);
   };
 }
 
 if (import.meta.main) {
   const config = await loadConfig();
   const handler = createHandler(config);
-  Bun.serve({
-    hostname: config.host,
-    port: config.port,
-    fetch: handler,
-  });
-  console.log(`Frely Snap listening on ${config.host}:${config.port}`);
+  Bun.serve({ hostname: config.host, port: config.port, fetch: handler });
+  console.log(`Frely Swarm vision runtime listening on ${config.host}:${config.port}`);
 }

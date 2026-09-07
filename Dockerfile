@@ -11,13 +11,11 @@ RUN bun run build
 FROM oven/bun:1.4.0-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-ENV SNAP_HOST=0.0.0.0
-ENV PORT=8080
+ENV SWARM_HOST=0.0.0.0
+ENV PORT=4111
 
 COPY --from=build /app/dist ./dist
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/bun.lock ./bun.lock
 
 USER bun
-EXPOSE 8080
+EXPOSE 4111
 CMD ["bun", "dist/server.js"]
