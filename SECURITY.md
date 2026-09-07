@@ -2,7 +2,7 @@
 
 ## Safe use
 
-Keep gateway and probe keys in files that are readable only by the service. Never commit secret files or place credentials in Compose YAML, issue reports, logs, metrics, or screenshots. Keep the local listener bound to loopback and use HTTPS for hosted upstream connections.
+Keep service and Frely model-access keys in files that are readable only by the service. Never commit secret files or place credentials in Compose YAML, issue reports, logs, metrics, or screenshots. Keep the local listener bound to loopback and use HTTPS whenever the Frely model-access endpoint is not loopback-local.
 
 Do not submit private keys, seed phrases, bearer credentials, cookies, passwords, signatures, signed transactions, or database credentials. Snap rejects common sensitive field names and value shapes, but callers remain responsible for reviewing context before sending it.
 
