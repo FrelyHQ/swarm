@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const root = new URL("..", import.meta.url).pathname;
@@ -26,16 +26,17 @@ const forbiddenMarkers = [
   "BEGIN OPENSSH PRIVATE KEY",
 ];
 
-const files = [];
-async function walk(directory) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if ([".git", "node_modules", "dist", "coverage", "secrets"].includes(entry.name)) continue;
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) await walk(path);
-    else files.push(path);
-  }
-}
-await walk(root);
+const listing = Bun.spawn(
+  ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  { cwd: root, stdout: "pipe", stderr: "pipe" },
+);
+const [listingOutput, listingError, listingExit] = await Promise.all([
+  new Response(listing.stdout).text(),
+  new Response(listing.stderr).text(),
+  listing.exited,
+]);
+if (listingExit !== 0) throw new Error(`unable to list publishable files: ${listingError.trim()}`);
+const files = listingOutput.split("\0").filter(Boolean).map((name) => join(root, name));
 
 const violations = [];
 for (const forbiddenPath of forbiddenPaths) {
